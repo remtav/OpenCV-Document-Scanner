@@ -6,6 +6,10 @@
 # python scan.py --images sample_images
 
 # Scanned images will be output to directory named 'output'
+from io import BytesIO
+from pathlib import Path
+
+from PIL import Image
 
 from pyimagesearch import transform
 from pyimagesearch import imutils
@@ -18,6 +22,7 @@ import itertools
 import math
 import cv2
 from pylsd.lsd import lsd
+from pdf2image import convert_from_path
 
 import argparse
 import os
@@ -266,11 +271,11 @@ class DocScanner(object):
     def scan(self, image_path):
 
         RESCALED_HEIGHT = 500.0
-        OUTPUT_DIR = 'output'
+        #OUTPUT_DIR = 'output'
 
         # load the image and compute the ratio of the old height
         # to the new height, clone it, and resize it
-        image = cv2.imread(image_path)
+        image = cv2.imread(str(image_path))
 
         assert(image is not None)
 
@@ -285,7 +290,11 @@ class DocScanner(object):
             screenCnt = self.interactive_get_contour(screenCnt, rescaled_image)
 
         # apply the perspective transformation
-        warped = transform.four_point_transform(orig, screenCnt * ratio)
+        warp = False
+        if warp:
+            warped = transform.four_point_transform(orig, screenCnt * ratio)
+        else:
+            warped = orig
 
         # convert the warped image to grayscale
         gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
@@ -298,9 +307,13 @@ class DocScanner(object):
         thresh = cv2.adaptiveThreshold(sharpen, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 15)
 
         # save the transformed image
-        basename = os.path.basename(image_path)
-        cv2.imwrite(OUTPUT_DIR + '/' + basename, thresh)
-        print("Proccessed " + basename)
+        suffix = '.jpg' if image_path.suffix == '.pdf' else image_path.suffix
+        outdir = image_path.parent / "scanned"
+        outdir.mkdir(exist_ok=True)
+        outfile = outdir / f"{image_path.stem}_out{suffix}"
+
+        cv2.imwrite(str(outfile), thresh)
+        print("Proccessed " + outfile.name)
 
 
 if __name__ == "__main__":
@@ -324,10 +337,30 @@ if __name__ == "__main__":
 
     # Scan single image specified by command line argument --image <IMAGE_PATH>
     if im_file_path:
+        im_file_path = Path(im_file_path)
+        if im_file_path.suffix == '.pdf':
+            raise NotImplementedError('Use --images arg with pdf files')
         scanner.scan(im_file_path)
 
     # Scan all valid images in directory specified by command line argument --images <IMAGE_DIR>
     else:
-        im_files = [f for f in os.listdir(im_dir) if get_ext(f) in valid_formats]
+        im_files = []
+        for ext in valid_formats:
+            im_files.extend(Path(im_dir).glob(f"**/*{ext}"))
+        #im_files = [f for f in os.listdir(im_dir) if get_ext(f) in valid_formats]
+        include_pdf = True
+        if include_pdf:
+            pdfs = Path(im_dir).glob(f"**/*.pdf")
+            for pdf in pdfs:
+                imgsfrompdf = convert_from_path(pdf)
+                for i, img in enumerate(imgsfrompdf):
+                    outdir = pdf.parent / "pdf2jpg"
+                    outdir.mkdir(exist_ok=True)
+                    outimg = outdir / f"{pdf.stem}_{i}.jpg"
+                    if not outimg.is_file():
+                        img.save(outimg, format="jpeg")
+                        im_files.append(outimg)
+                    else:
+                        print(f'Already converted to jpg: {pdf}')
         for im in im_files:
-            scanner.scan(im_dir + '/' + im)
+            scanner.scan(im)
