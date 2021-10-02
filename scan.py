@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
+from tqdm import tqdm
 
 from pyimagesearch import transform
 from pyimagesearch import imutils
@@ -26,6 +27,7 @@ from pdf2image import convert_from_path
 
 import argparse
 import os
+
 
 class DocScanner(object):
     """An image scanner"""
@@ -192,6 +194,7 @@ class DocScanner(object):
         gray = cv2.cvtColor(rescaled_image, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (7,7), 0)
 
+
         # dilate helps to remove potential holes between edge segments
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(MORPH,MORPH))
         dilated = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
@@ -268,7 +271,17 @@ class DocScanner(object):
         new_points = np.array([[p] for p in new_points], dtype = "int32")
         return new_points.reshape(4, 2)
 
-    def scan(self, image_path):
+    def scan(self, image_path, debug=False):
+        # output info
+        suffix = '.png'  # if image_path.suffix == '.pdf' else image_path.suffix
+        outdir = image_path.parent / "scanned"
+        outdir.mkdir(exist_ok=True)
+        outfile = outdir / f"{image_path.stem}_out{suffix}"
+        if outfile.is_file():
+            print(f'Exists:{outfile}')
+            image = cv2.imread(str(outfile))
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            return gray
 
         RESCALED_HEIGHT = 500.0
         #OUTPUT_DIR = 'output'
@@ -289,8 +302,13 @@ class DocScanner(object):
         if self.interactive:
             screenCnt = self.interactive_get_contour(screenCnt, rescaled_image)
 
-        # apply the perspective transformation
-        warp = False
+        # apply the perspective transformation on color images
+        hsvimg = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        mean_hue = np.mean(hsvimg[..., 0])
+        mean_sat = np.mean(hsvimg[..., 1])
+        # filtering based on hue and saturation values. Not perfect, but works in most cases
+        warp = True if mean_hue > 1 and mean_sat > 30 else False
+
         if warp:
             warped = transform.four_point_transform(orig, screenCnt * ratio)
         else:
@@ -302,18 +320,48 @@ class DocScanner(object):
         # sharpen image
         sharpen = cv2.GaussianBlur(gray, (0,0), 3)
         sharpen = cv2.addWeighted(gray, 1.5, sharpen, -0.5, 0)
-
+        
         # apply adaptive threshold to get black and white effect
         thresh = cv2.adaptiveThreshold(sharpen, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 15)
 
-        # save the transformed image
-        suffix = '.jpg' if image_path.suffix == '.pdf' else image_path.suffix
-        outdir = image_path.parent / "scanned"
-        outdir.mkdir(exist_ok=True)
-        outfile = outdir / f"{image_path.stem}_out{suffix}"
+        print(thresh.shape)
 
+        fraction = 5
+        # if portrait
+        if thresh.shape[0] > thresh.shape[1]:
+            #print(f'FLIP! {image_path}\t{thresh.shape}')
+            crop1 = thresh[0:(2*(thresh.shape[0] // 3)), 0:thresh.shape[1] // fraction]  # left
+            crop2 = thresh[thresh.shape[0] // 3:, (thresh.shape[1] - thresh.shape[1] // fraction):]  # right
+            ls_mean_val = np.mean(crop1)
+            rs_mean_val = np.mean(crop2)
+            print(ls_mean_val, rs_mean_val)
+            # if left side has more white than right side, flip 270 degrees
+            if ls_mean_val < rs_mean_val:
+                thresh = np.rot90(thresh, 3)
+                print(f'{image_path}\t270')
+            # else flip 90 degrees
+            else:
+                thresh = np.rot90(thresh, 1)
+                print(f'{image_path}\t90')
+        # else (landscape)
+        else:
+            crop1 = thresh[0:thresh.shape[0] // fraction, 0:(2*(thresh.shape[1] // 3))]  # top
+            crop2 = thresh[(thresh.shape[0] - thresh.shape[0] // fraction):, thresh.shape[1] // 3:]  # bottom
+            top_mean_val = np.mean(crop1)
+            bottom_mean_val = np.mean(crop2)
+            print(top_mean_val, bottom_mean_val)
+            # if top side has more white than bottom side, flip 180 degrees
+            if top_mean_val > bottom_mean_val:
+                thresh = np.rot90(thresh, 2)
+                print(f'{image_path}\t180')
+            else:
+                pass
+
+        # save the transformed image
         cv2.imwrite(str(outfile), thresh)
-        print("Proccessed " + outfile.name)
+        print(f"Proccessed {outfile}")
+
+        return thresh
 
 
 if __name__ == "__main__":
@@ -323,10 +371,11 @@ if __name__ == "__main__":
     group.add_argument("--image", help="Path to single image to be scanned")
     ap.add_argument("-i", action='store_true',
         help = "Flag for manually verifying and/or setting document corners")
-
+    ap.add_argument("-d", help='debug mode')
     args = vars(ap.parse_args())
     im_dir = args["images"]
     im_file_path = args["image"]
+    debug = True if args["d"] and args["d"] == 'True' else False
     interactive_mode = args["i"]
 
     scanner = DocScanner(interactive_mode)
@@ -346,6 +395,7 @@ if __name__ == "__main__":
     else:
         im_files = []
         for ext in valid_formats:
+            #im_files.extend(Path(im_dir).glob(f"*12-06*{ext}"))
             im_files.extend(Path(im_dir).glob(f"**/*{ext}"))
         #im_files = [f for f in os.listdir(im_dir) if get_ext(f) in valid_formats]
         include_pdf = True
@@ -353,6 +403,7 @@ if __name__ == "__main__":
             pdfs = Path(im_dir).glob(f"**/*.pdf")
             for pdf in pdfs:
                 imgsfrompdf = convert_from_path(pdf)
+                to_crop = []
                 for i, img in enumerate(imgsfrompdf):
                     outdir = pdf.parent / "pdf2jpg"
                     outdir.mkdir(exist_ok=True)
@@ -362,5 +413,29 @@ if __name__ == "__main__":
                         im_files.append(outimg)
                     else:
                         print(f'Already converted to jpg: {pdf}')
-        for im in im_files:
-            scanner.scan(im)
+
+        for im in tqdm(sorted(im_files)):
+            if not 'scanned' in str(im.parent):
+                scanned = scanner.scan(im)
+            else:
+                continue
+            # Output numbers of checked boxes
+            blur = cv2.GaussianBlur(scanned, (5, 5), 0)
+            if debug:
+                cv2.imshow("Blur", blur)
+                cv2.waitKey()
+
+            thresh2 = cv2.adaptiveThreshold(blur, 255, 1, 1, 11, 2)
+            if debug:
+                cv2.imshow("thresh2", thresh2)
+                cv2.waitKey()
+
+            contours, hierarchy = cv2.findContours(thresh2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+            mask = np.zeros((thresh2.shape), np.uint8)
+            cv2.drawContours(mask, [contours[0]], 0, 255, -1)
+            cv2.drawContours(mask, [contours[0]], 0, 0, 2)
+            if debug:
+                cv2.imshow("mask", mask)
+                cv2.waitKey()
