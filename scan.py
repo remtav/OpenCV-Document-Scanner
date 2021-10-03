@@ -211,7 +211,7 @@ class DocScanner(object):
             for quad in itertools.combinations(test_corners, 4):
                 points = np.array(quad)
                 points = transform.order_points(points)
-                points = np.array([[p] for p in points], dtype = "int32")
+                points = np.array([[p] for p in points], dtype="int32")
                 quads.append(points)
 
             # get top five quadrilaterals by area
@@ -272,6 +272,10 @@ class DocScanner(object):
         return new_points.reshape(4, 2)
 
     def scan(self, image_path, debug=False):
+        print('TESTING. HARCODED STUFF.')
+        image = cv2.imread(str(image_path))
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return gray
         # output info
         suffix = '.png'  # if image_path.suffix == '.pdf' else image_path.suffix
         outdir = image_path.parent / "scanned"
@@ -363,6 +367,84 @@ class DocScanner(object):
 
         return thresh
 
+    def get_grid_contour(self, rescaled_image):
+        """
+        Returns a numpy array of shape (4, 2) containing the vertices of the four corners
+        of the document in the image. It considers the corners returned from get_corners()
+        and uses heuristics to choose the four corners that most likely represent
+        the corners of the document. If no corners were found, or the four corners represent
+        a quadrilateral that is too small or convex, it returns the original four corners.
+        """
+
+        # these constants are carefully chosen
+        MORPH = 9
+        CANNY = 84
+        HOUGH = 25
+
+        IM_HEIGHT, IM_WIDTH = rescaled_image.shape
+
+        # convert the image to grayscale and blur it slightly
+        # gray = cv2.cvtColor(rescaled_image, cv2.COLOR_BGR2GRAY)
+        # gray = cv2.GaussianBlur(gray, (7,7), 0)
+        gray = rescaled_image
+
+
+        # dilate helps to remove potential holes between edge segments
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(MORPH,MORPH))
+        dilated = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+        cv2.imshow("Dilated", dilated)
+        cv2.waitKey()
+
+        # find edges and mark them in the output map using the Canny algorithm
+        # edged = cv2.Canny(dilated, 0, CANNY)
+        # test_corners = self.get_corners(edged)
+        # cv2.imshow("Edged", edged)
+        # cv2.waitKey()
+        edged = dilated
+
+        contours, _ = cv2.findContours(edged, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        cnts_grid = []
+        areas = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            areas.append(area)
+            if 1660 < area < 5000:
+                cnts_grid.append(c)
+                # # approximate the contour
+                # peri = cv2.arcLength(c, True)
+                # approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+                # # if the contour has four vertices, then we have found
+                # # rectangular contours
+                # if len(approx) == 4:
+                #     cnts_grid.append(c)
+
+        return cnts_grid
+
+        # contours, hierarchy = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        # contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        #
+        # # loop over the contours
+        # cnts_rec = []
+        # for c in contours:
+        #     # approximate the contour
+        #     peri = cv2.arcLength(c, True)
+        #     approx = cv2.approxPolyDP(c, 0.03 * peri, True)
+        #     # if the contour has four vertices, then we have found
+        #     # rectangular contours
+        #     if len(approx) == 4:
+        #         cnts_rec.append(c)
+        # #
+        # # mask = np.zeros((thresh2.shape), np.uint8)
+        # #cv2.drawContours(rescaled_image, contours, 0, 255, -1)
+        # cv2.drawContours(rescaled_image, cnts_rec, -1, 120, 2)
+        # if debug:
+        #      cv2.imshow("Contours", rescaled_image)
+        #      cv2.waitKey()
+
+        approx_contours = []
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -415,27 +497,46 @@ if __name__ == "__main__":
                         print(f'Already converted to jpg: {pdf}')
 
         for im in tqdm(sorted(im_files)):
-            if not 'scanned' in str(im.parent):
-                scanned = scanner.scan(im)
-            else:
-                continue
+            org_image = cv2.imread(str(im))
+            scanned = scanner.scan(im)
+            # if not 'scanned' in str(im.parent):
+            #     scanned = scanner.scan(im)
+            # else:
+            #     continue
             # Output numbers of checked boxes
             blur = cv2.GaussianBlur(scanned, (5, 5), 0)
-            if debug:
-                cv2.imshow("Blur", blur)
-                cv2.waitKey()
+            # if debug:
+            #     cv2.imshow("Blur", blur)
+            #     cv2.waitKey()
 
             thresh2 = cv2.adaptiveThreshold(blur, 255, 1, 1, 11, 2)
-            if debug:
-                cv2.imshow("thresh2", thresh2)
-                cv2.waitKey()
+            # if debug:
+            #     cv2.imshow("thresh2", thresh2)
+            #     cv2.waitKey()
 
-            contours, hierarchy = cv2.findContours(thresh2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            grid_contours = scanner.get_grid_contour(thresh2)
 
-            mask = np.zeros((thresh2.shape), np.uint8)
-            cv2.drawContours(mask, [contours[0]], 0, 255, -1)
-            cv2.drawContours(mask, [contours[0]], 0, 0, 2)
-            if debug:
-                cv2.imshow("mask", mask)
-                cv2.waitKey()
+            cv2.drawContours(org_image, grid_contours, -1, (0, 0, 255), 1)
+            cv2.imshow("Contours", org_image)
+            cv2.waitKey()
+            cv2.destroyAllWindows()
+
+            # contours, hierarchy = cv2.findContours(thresh2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            # contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            # # loop over the contours
+            # cnts_rec = []
+            # for c in contours:
+            #     # approximate the contour
+            #     peri = cv2.arcLength(c, True)
+            #     approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            #     # if the contour has four vertices, then we have found
+            #     # rectangular contours
+            #     if len(approx) == 4:
+            #         cnts_rec.append(c)
+            #
+            # mask = np.zeros((thresh2.shape), np.uint8)
+            # cv2.drawContours(mask, [contours[0]], 0, 255, -1)
+            # cv2.drawContours(mask, [contours[0]], 0, 0, 2)
+            # if debug:
+            #     cv2.imshow("mask", mask)
+            #     cv2.waitKey()
