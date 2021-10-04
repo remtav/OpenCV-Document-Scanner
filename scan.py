@@ -330,6 +330,13 @@ class DocScanner(object):
 
         print(thresh.shape)
 
+        # FIXME: rotate with OCR
+        # osd = pytesseract.image_to_osd(img)
+        # angle = re.search('(?<=Rotate: )\d+', osd).group(0)
+        # script = re.search('(?<=Script: )\d+', osd).group(0)
+        # print("angle: ", angle)
+        # print("script: ", script)
+
         fraction = 5
         # if portrait
         if thresh.shape[0] > thresh.shape[1]:
