@@ -377,7 +377,7 @@ class DocScanner(object):
         """
 
         # these constants are carefully chosen
-        MORPH = 9
+        MORPH = 5
         CANNY = 84
         HOUGH = 25
 
@@ -392,8 +392,8 @@ class DocScanner(object):
         # dilate helps to remove potential holes between edge segments
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(MORPH,MORPH))
         dilated = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
-        cv2.imshow("Dilated", dilated)
-        cv2.waitKey()
+        # cv2.imshow("Dilated", dilated)
+        # cv2.waitKey()
 
         # find edges and mark them in the output map using the Canny algorithm
         # edged = cv2.Canny(dilated, 0, CANNY)
@@ -407,20 +407,22 @@ class DocScanner(object):
 
         cnts_grid = []
         areas = []
+        peris = []
         for c in contours:
             area = cv2.contourArea(c)
             areas.append(area)
-            if 1660 < area < 5000:
-                cnts_grid.append(c)
+            if 1500 < area < 2300:
+                #cnts_grid.append(c)
                 # # approximate the contour
-                # peri = cv2.arcLength(c, True)
-                # approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-                # # if the contour has four vertices, then we have found
-                # # rectangular contours
-                # if len(approx) == 4:
-                #     cnts_grid.append(c)
+                peri = cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+                # if the contour has four vertices, then we have found
+                # rectangular contours
+                if len(approx) == 4 and 150 < peri < 210:
+                    cnts_grid.append(c)
+                    peris.append(peri)
 
-        return cnts_grid
+        return cnts_grid, areas, peris
 
         # contours, hierarchy = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         # contours = sorted(contours, key=cv2.contourArea, reverse=True)
@@ -498,7 +500,11 @@ if __name__ == "__main__":
 
         for im in tqdm(sorted(im_files)):
             org_image = cv2.imread(str(im))
+            print(org_image.shape)
             scanned = scanner.scan(im)
+            ratio = 1024 / scanned.shape[0]
+            org_image = cv2.resize(org_image, (round(org_image.shape[1] * ratio), 1024), interpolation=cv2.INTER_LINEAR)
+            scanned = cv2.resize(scanned, (round(scanned.shape[1]*ratio), 1024), interpolation=cv2.INTER_NEAREST)
             # if not 'scanned' in str(im.parent):
             #     scanned = scanner.scan(im)
             # else:
@@ -514,29 +520,71 @@ if __name__ == "__main__":
             #     cv2.imshow("thresh2", thresh2)
             #     cv2.waitKey()
 
-            grid_contours = scanner.get_grid_contour(thresh2)
+            grid_contours, areas, peris = scanner.get_grid_contour(thresh2)
 
-            cv2.drawContours(org_image, grid_contours, -1, (0, 0, 255), 1)
-            cv2.imshow("Contours", org_image)
-            cv2.waitKey()
-            cv2.destroyAllWindows()
+            # cv2.drawContours(org_image, grid_contours, -1, (0, 0, 255), 1)
+            # cv2.imshow("Contours", org_image)
+            # cv2.waitKey()
+            # cv2.destroyAllWindows()
 
-            # contours, hierarchy = cv2.findContours(thresh2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-            # contours = sorted(contours, key=cv2.contourArea, reverse=True)
-            # # loop over the contours
-            # cnts_rec = []
-            # for c in contours:
-            #     # approximate the contour
-            #     peri = cv2.arcLength(c, True)
-            #     approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            #     # if the contour has four vertices, then we have found
-            #     # rectangular contours
-            #     if len(approx) == 4:
-            #         cnts_rec.append(c)
-            #
-            # mask = np.zeros((thresh2.shape), np.uint8)
-            # cv2.drawContours(mask, [contours[0]], 0, 255, -1)
-            # cv2.drawContours(mask, [contours[0]], 0, 0, 2)
-            # if debug:
-            #     cv2.imshow("mask", mask)
-            #     cv2.waitKey()
+            try:
+                concat = np.concatenate(grid_contours)
+                hull = cv2.convexHull(concat)
+                area_hull = cv2.contourArea(hull)
+                peri = cv2.arcLength(hull, True)
+
+                x, y, w, h = cv2.boundingRect(concat)
+                bbox = np.array([y, x+w, y+h, x])  # top, right, bottom, left
+                area_bb = ((x+w)-x)*((y+h)-y)
+
+                hull_bb_ratio = area_hull/area_bb*100
+                # if hull_bb_ratio > 99:
+                #     aoi = hull
+                # else:
+                #     aoi = bbox
+
+                mask = np.zeros((scanned.shape), np.uint8)
+                image = cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
+                image = cv2.rectangle(mask, (x, y), (x + w, y + h), 0, 2)
+                # cv2.drawContours(mask, [aoi], 0, 255, -1)
+                # cv2.drawContours(mask, [aoi], 0, 0, 2)
+
+                out = np.zeros_like(scanned)
+                out[mask == 255] = scanned[mask == 255]
+                outfile = im.parent.parent / f'{im.stem}_aoi.png'
+                cv2.imwrite(str(outfile), out)
+                # cv2.imshow("New image", out)
+                # cv2.waitKey()
+                # cv2.destroyAllWindows()
+
+                # cv2.drawContours(org_image, [hull], -1, (255, 0, 0), 2)
+                # cv2.imshow("Bingo AOI Hull", org_image)
+                # cv2.waitKey()
+                #
+                # image = cv2.rectangle(org_image, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                # cv2.imshow("Bingo AOI BBox", image)
+                # cv2.waitKey()
+                # cv2.destroyAllWindows()
+
+                # contours, hierarchy = cv2.findContours(thresh2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+                # contours = sorted(contours, key=cv2.contourArea, reverse=True)
+                # # loop over the contours
+                # cnts_rec = []
+                # for c in contours:
+                #     # approximate the contour
+                #     peri = cv2.arcLength(c, True)
+                #     approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+                #     # if the contour has four vertices, then we have found
+                #     # rectangular contours
+                #     if len(approx) == 4:
+                #         cnts_rec.append(c)
+                #
+                # mask = np.zeros((thresh2.shape), np.uint8)
+                # cv2.drawContours(mask, [contours[0]], 0, 255, -1)
+                # cv2.drawContours(mask, [contours[0]], 0, 0, 2)
+                # if debug:
+                #     cv2.imshow("mask", mask)
+                #     cv2.waitKey()
+
+            except ValueError:
+                continue
