@@ -272,15 +272,15 @@ class DocScanner(object):
         return new_points.reshape(4, 2)
 
     def scan(self, image_path, debug=False):
-        print('TESTING. HARCODED STUFF.')
-        image = cv2.imread(str(image_path))
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        return gray
+        # print('TESTING. HARCODED STUFF.')
+        # image = cv2.imread(str(image_path))
+        # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # return gray
         # output info
         suffix = '.png'  # if image_path.suffix == '.pdf' else image_path.suffix
-        outdir = image_path.parent / "scanned"
-        outdir.mkdir(exist_ok=True)
-        outfile = outdir / f"{image_path.stem}_out{suffix}"
+        outdir_scan = image_path.parent / "scanned"
+        outdir_scan.mkdir(exist_ok=True)
+        outfile = outdir_scan / f"{image_path.stem}_out{suffix}"
         if outfile.is_file():
             print(f'Exists:{outfile}')
             image = cv2.imread(str(outfile))
@@ -489,43 +489,47 @@ if __name__ == "__main__":
             #im_files.extend(Path(im_dir).glob(f"*12-06*{ext}"))
             im_files.extend(Path(im_dir).glob(f"**/*{ext}"))
         #im_files = [f for f in os.listdir(im_dir) if get_ext(f) in valid_formats]
-        include_pdf = True
+        include_pdf = False
         if include_pdf:
             pdfs = Path(im_dir).glob(f"**/*.pdf")
-            for pdf in pdfs:
-                imgsfrompdf = convert_from_path(pdf)
-                to_crop = []
-                for i, img in enumerate(imgsfrompdf):
-                    outdir = pdf.parent / "pdf2jpg"
-                    outdir.mkdir(exist_ok=True)
-                    outimg = outdir / f"{pdf.stem}_{i}.jpg"
-                    if not outimg.is_file():
-                        img.save(outimg, format="jpeg")
-                        im_files.append(outimg)
-                    else:
-                        print(f'Already converted to jpg: {pdf}')
+            for pdf in tqdm(pdfs):
+                outdir = pdf.parent / "pdf2jpg"
+                outdir.mkdir(exist_ok=True)
+                globbed = list(outdir.glob(f'*{pdf.stem}*.jpg'))
+                if len(globbed) == 0:
+                    print(f'Converting to jpg: {pdf}')
+                    imgsfrompdf = convert_from_path(pdf)
+                    to_crop = []
+                    for i, img in enumerate(imgsfrompdf):
+                        outimg = outdir / f"{pdf.stem}_{i}.jpg"
+                        if not outimg.is_file():
+                            img.save(outimg, format="jpeg")
+                            im_files.append(outimg)
+                else:
+                    print(f'Already converted to jpg: {pdf}')
 
         for im in tqdm(sorted(im_files)):
             org_image = cv2.imread(str(im))
             print(org_image.shape)
-            scanned = scanner.scan(im)
+            if not 'scanned' in str(im.parent):
+                print('HARDCODED SKIP NOT SCANNED')
+                continue
+                #scanned = scanner.scan(im)
+            else:
+                scanned = cv2.cvtColor(org_image, cv2.COLOR_BGR2GRAY)
             ratio = 1024 / scanned.shape[0]
             org_image = cv2.resize(org_image, (round(org_image.shape[1] * ratio), 1024), interpolation=cv2.INTER_LINEAR)
             scanned = cv2.resize(scanned, (round(scanned.shape[1]*ratio), 1024), interpolation=cv2.INTER_NEAREST)
-            # if not 'scanned' in str(im.parent):
-            #     scanned = scanner.scan(im)
-            # else:
-            #     continue
             # Output numbers of checked boxes
             blur = cv2.GaussianBlur(scanned, (5, 5), 0)
-            # if debug:
-            #     cv2.imshow("Blur", blur)
-            #     cv2.waitKey()
+            if debug:
+                cv2.imshow("Blur", blur)
+                cv2.waitKey()
 
             thresh2 = cv2.adaptiveThreshold(blur, 255, 1, 1, 11, 2)
-            # if debug:
-            #     cv2.imshow("thresh2", thresh2)
-            #     cv2.waitKey()
+            if debug:
+                cv2.imshow("thresh2", thresh2)
+                cv2.waitKey()
 
             grid_contours, areas, peris = scanner.get_grid_contour(thresh2)
 
@@ -534,6 +538,7 @@ if __name__ == "__main__":
             # cv2.waitKey()
             # cv2.destroyAllWindows()
 
+            #CREATING AOI FROM GRID CONTOURS
             try:
                 concat = np.concatenate(grid_contours)
                 hull = cv2.convexHull(concat)
@@ -545,53 +550,109 @@ if __name__ == "__main__":
                 area_bb = ((x+w)-x)*((y+h)-y)
 
                 hull_bb_ratio = area_hull/area_bb*100
-                # if hull_bb_ratio > 99:
-                #     aoi = hull
-                # else:
-                #     aoi = bbox
 
+                # DRAWING RECTANGLE ON AOI
                 mask = np.zeros((scanned.shape), np.uint8)
                 image = cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
                 image = cv2.rectangle(mask, (x, y), (x + w, y + h), 0, 2)
-                # cv2.drawContours(mask, [aoi], 0, 255, -1)
-                # cv2.drawContours(mask, [aoi], 0, 0, 2)
+
+                # BLACK OUT WHERE CONTOURS (non-checked grid items) ARE ON SCANNED IMAGE
+                for i, contour in enumerate(grid_contours):
+                    # cont_hull = cv2.convexHull(contour)
+                    xb, yb, wb, hb = cv2.boundingRect(contour)
+                    # black out where contours are on scanned image
+                    image = cv2.rectangle(mask, (xb, yb), (xb + wb, yb + hb), 0, -1)
+                    # crop individual contour for saving
+                    grid_item = scanned[yb:yb + hb, xb:xb + wb]
+
+                # WRITING ONLY AOI AS IMAGE
+                outdir_trn = Path(f'/home/remi/Documents/sherbrooke_citoyen/training_img/{im.parent.parent.parent.name}')
+                Path.mkdir(outdir_trn, exist_ok=True)
 
                 out = np.zeros_like(scanned)
                 out[mask == 255] = scanned[mask == 255]
-                outfile = im.parent.parent / f'{im.stem}_aoi.png'
-                cv2.imwrite(str(outfile), out)
-                # cv2.imshow("New image", out)
-                # cv2.waitKey()
-                # cv2.destroyAllWindows()
+                #outfile = outdir / f'{im.stem}_aoi.png'
+                # cv2.imwrite(str(outfile), out)
+                if debug:
+                    cv2.imshow("New image", out)
+                    cv2.waitKey()
+                    cv2.destroyAllWindows()
 
-                # cv2.drawContours(org_image, [hull], -1, (255, 0, 0), 2)
-                # cv2.imshow("Bingo AOI Hull", org_image)
-                # cv2.waitKey()
-                #
-                # image = cv2.rectangle(org_image, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                # cv2.imshow("Bingo AOI BBox", image)
-                # cv2.waitKey()
-                # cv2.destroyAllWindows()
+                blur2 = cv2.GaussianBlur(out, (5, 5), 0)
+                if debug:
+                    cv2.imshow("Blur2", blur2)
+                    cv2.waitKey()
 
-                # contours, hierarchy = cv2.findContours(thresh2, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-                # contours = sorted(contours, key=cv2.contourArea, reverse=True)
-                # # loop over the contours
-                # cnts_rec = []
-                # for c in contours:
-                #     # approximate the contour
-                #     peri = cv2.arcLength(c, True)
-                #     approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-                #     # if the contour has four vertices, then we have found
-                #     # rectangular contours
-                #     if len(approx) == 4:
-                #         cnts_rec.append(c)
-                #
-                # mask = np.zeros((thresh2.shape), np.uint8)
-                # cv2.drawContours(mask, [contours[0]], 0, 255, -1)
-                # cv2.drawContours(mask, [contours[0]], 0, 0, 2)
-                # if debug:
-                #     cv2.imshow("mask", mask)
-                #     cv2.waitKey()
+                # DILATE WITH WHITE TO TRY AND GET INDIVIDUAL CHECKED GRID ITEMS
+                # dilate helps to separate checked "x" from sides of grid item
+                MORPH = 5
+                kernel2 = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH, MORPH))
+                dilated2 = cv2.morphologyEx(blur2, cv2.MORPH_CLOSE, kernel2)
+                if debug:
+                    cv2.imshow("Dilated2", dilated2)
+                    cv2.waitKey()
+
+                grid_contours2, areas, peris = scanner.get_grid_contour(dilated2)
+
+                cnts_grid = []
+                for i, contour in enumerate(grid_contours2):
+                    area = cv2.contourArea(contour)
+                    areas.append(area)
+                    if 1500 < area < 2500:
+                        # cnts_grid.append(c)
+                        # # approximate the contour
+                        peri = cv2.arcLength(contour, True)
+                        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                        # if the contour has four vertices, then we have found
+                        # rectangular contours
+                        if len(approx) == 4 and 150 < peri < 230:
+                            cnts_grid.append(contour)
+                            peris.append(peri)
+                            # cont_hull = cv2.convexHull(contour)
+                            xc, yc, wc, hc = cv2.boundingRect(contour)
+                            # FILLING OUTSIDE OF CONTOUR WITH BLACK
+                            mask2 = np.zeros((scanned.shape), np.uint8)
+                            cv2.drawContours(mask2, [contour], 0, 255, -1)
+                            if debug:
+                                cv2.imshow("mask2", mask2)
+                                cv2.waitKey()
+                            out2 = np.zeros_like(scanned)
+                            out2[mask2 == 255] = scanned[mask2 == 255]
+                            if debug:
+                                cv2.imshow("out2", out2)
+                                cv2.waitKey()
+                            # crop individual contour for saving
+                            grid_item = out2[yc:yc + hc, xc:xc + wc]
+                            if debug:
+                                cv2.imshow("Grid item", grid_item)
+                                cv2.waitKey()
+                            thresh_it = cv2.adaptiveThreshold(grid_item, 255, 1, 1, 11, 2)
+                            if debug:
+                                cv2.imshow("thresh item", thresh_it)
+                                cv2.waitKey()
+                            MORPH_it = 8
+                            kernel_it = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_it, MORPH_it))
+                            dilated_it = cv2.morphologyEx(thresh_it, cv2.MORPH_CLOSE, kernel_it)
+                            if debug:
+                                cv2.imshow("Dilated item", dilated_it)
+                                cv2.waitKey()
+                            mean_val = int(np.mean(grid_item))
+                            # bringing it back white insides, black outsides
+                            dilated_it = cv2.adaptiveThreshold(dilated_it, 255, 1, 1, 11, 2)
+                            last_filtered, _ = cv2.findContours(dilated_it, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+                            last_filtered = sorted(last_filtered, key=cv2.contourArea, reverse=True)
+                            largest = cv2.contourArea(last_filtered[0])
+                            cv2.drawContours(dilated_it, [last_filtered[0]], -1, 125, 2)
+                            if debug:
+                                cv2.imshow('Dilated_it_cont', dilated_it)
+                                cv2.waitKey()
+                            out_name = str(outdir_trn / f'{im.stem}_{xc}_{yc}_{wc}_{hc}.png')
+                            #out_name = str(outdir_trn / f'{mean_val}_{int(largest)}_{i}_{xc}_{yc}_{wc}_{hc}.png')
+                            # under 185 is certainly checked
+                            if mean_val < 165:
+                                cv2.imwrite(out_name, grid_item)
+                            elif 165 < mean_val < 194 and largest < 1000:
+                                cv2.imwrite(out_name, grid_item)
 
             except ValueError:
                 continue
