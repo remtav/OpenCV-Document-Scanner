@@ -560,13 +560,14 @@ if __name__ == "__main__":
             # if image isn't in scanned folder and if image hasn't already been scanned, then scan it
             out_img = im.parent / 'scanned' / f"{im.stem}_out.png" if not 'scanned' == str(im.parent.stem) else None
             if not 'scanned' == str(im.parent.stem) and not out_img.is_file():
-                    continue
-                    #scanned = scanner.scan(im, debug=debug)
+                #continue
+                scanned = scanner.scan(im, debug=debug)
             elif 'scanned' == str(im.parent.stem):
                 scanned = cv2.cvtColor(org_image, cv2.COLOR_BGR2GRAY)
             else:
                 print(f'Ignoring {im}')
                 continue
+            #continue
             ratio = 1024 / scanned.shape[0]
             org_image = cv2.resize(org_image, (round(org_image.shape[1] * ratio), 1024), interpolation=cv2.INTER_LINEAR)
             scanned = cv2.resize(scanned, (round(scanned.shape[1]*ratio), 1024), interpolation=cv2.INTER_NEAREST)

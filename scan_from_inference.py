@@ -8,6 +8,7 @@
 # Scanned images will be output to directory named 'output'
 import glob
 import re
+import shutil
 from io import BytesIO
 from pathlib import Path
 
@@ -233,6 +234,16 @@ class DocScanner(object):
         return images
 
 
+def magic_num_from_pt(x_pt, y_pt, x_box, y_box, w_box, h_box):
+    # get relative position to width of bbs --> 25 columns
+    columns_limits = np.arange(x_box, w_box, w_box / 25)
+    column_num = np.max(np.where(columns_limits < x_pt))
+    # get relative position to height of bbs --> 18 rows
+    row_limits = np.arange(y_box, h_box, h_box / 18)
+    row_num = np.max(np.where(row_limits < y_pt))
+    magic_number = row_num * 25 + column_num + 1
+    return magic_number, columns_limits, row_limits, column_num, row_num
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--images", help="Directory of images to be scanned")
@@ -276,93 +287,204 @@ if __name__ == "__main__":
 
     print(f'Found {len(inf_pairs)} pairs of images and predictions. Detecting numbers in predicted bboxes...')
 
-    for img, prediction in inf_pairs:
-        img_district = [dir for dir in img.split('/') if 'District' in dir][0]
-        inf_data = pandas.read_table(prediction, sep=' ', header=None)
-        scanned_color = cv2.imread(str(img))
-        scanned = cv2.cvtColor(scanned_color, cv2.COLOR_BGR2GRAY)
-        if not scanned.shape[1] == 1024:
-            warnings.warn(f'Images used for inferences should already be preprocessed and resized to a 1024 height\n'
-                          f'Got image of shape: {scanned.shape}')
-            ratio = 1024 / scanned.shape[0]
-            scanned_color = cv2.resize(scanned_color, (round(scanned_color.shape[1] * ratio), 1024), interpolation=cv2.INTER_LINEAR)
-            scanned = cv2.resize(scanned, (round(scanned.shape[1]*ratio), 1024), interpolation=cv2.INTER_NEAREST)
+    last_district = None
+    results = []
 
-        # BLACK OUT CHECKED NUMBERS IN IMAGES
-        scanned_draw = scanned.copy()
-
-        conf_threshold = 0.77  # FIXME: softcode
-        pred_areas = []
-        pred_peris = []
-        pred_ratios = []
-        for row in inf_data.itertuples():
-            conf = row[-2]
-            if conf > conf_threshold:
-                x_rel, y_rel, w_rel, h_rel = row[-6:-2]
-                x = int(x_rel * scanned.shape[1])
-                y = int(y_rel * scanned.shape[0])
-                w = int(w_rel * scanned.shape[1])
-                h = int(h_rel * scanned.shape[0])
-                ratio = w / h
-                if 0.8 < ratio < 1.3:
-                    pt1 = int((x_rel-w_rel/2)*scanned.shape[1]), int((y_rel-h_rel/2)*scanned.shape[0])
-                    pt2 = int((x_rel+w_rel/2)*scanned.shape[1]), int((y_rel+h_rel/2)*scanned.shape[0])
-                    center = (x, y)
-                    #cv2.rectangle(scanned_draw, pt1, pt2, 0, -1)
-                    cv2.circle(scanned_draw, center, 1, 122, thickness=10)
-                    area = w*h
-                    peri = 2*w+2*h
-                    pred_areas.append(area)
-                    pred_peris.append(peri)
-                    pred_ratios.append(ratio)
-
-        if debug:
-            cv2.imshow("Checked", scanned_draw)
-            cv2.waitKey()
-            cv2.destroyAllWindows()
-
-        # find grid
-        mean_area = np.mean(pred_areas)
-        min_area = min(pred_areas)
-        max_area = max(pred_areas)
-        min_peri = min(pred_peris)
-        max_peri = max(pred_peris)
-        concat, hull, grid_contours, areas, peris = scanner.find_aoi(scanned,
-                                                                     min_area=min_area*0.65,
-                                                                     max_area=max_area*1.15,
-                                                                     min_peri=min_peri*0.75,
-                                                                     max_peri=max_peri*1.15,
-                                                                     debug=debug)  # bbox: x, y, w, h
-        bbox = cv2.boundingRect(concat)
-
-        # This served to see how close the BBox is to the hull. Would be better IoU-based measure
-        # area_hull = cv2.contourArea(hull)
-        # peri = cv2.arcLength(hull, True)
-        #
-        # area_bb = ((bbox[0]+bbox[2])-bbox[0])*((bbox[1]+bbox[3])-bbox[1])
-        # hull_bb_ratio = area_hull/area_bb*100
-
-        # DRAWING RECTANGLE ON AOI
-        mask = np.zeros((scanned.shape), np.uint8)
-        # draw white on aoi
-        aoi_mask = cv2.drawContours(mask, [hull], -1, 255, -1)
-        # where mask is black, paint original image in black
-        scanned_draw[mask == 0] = 0
-
-        if debug:
-            cv2.imshow("AOI_Checked", scanned_draw)
-            cv2.waitKey()
-            cv2.destroyAllWindows()
-
+    failed = 0
+    validate = 0
+    success = 0
+    for img, prediction in tqdm(inf_pairs):
         # WRITING ONLY AOI AS IMAGE
-        outdir_trn = Path(f'/home/remi/Documents/sherbrooke_citoyen/18oct_from_inf/{img_district}')
-        Path.mkdir(outdir_trn, exist_ok=True)
-        outfile = outdir_trn / f'{Path(img).stem}_aoi.png'
-        #outfile_draw = outdir_trn / f'{im.stem}_bbox.png'
+        img_district = [dir for dir in img.split('/') if 'District' in dir][0]
+        outdir = Path(f'/home/remi/Documents/sherbrooke_citoyen/27oct_from_inf/{img_district}')
+        Path.mkdir(outdir, exist_ok=True)
+        outdir_2nd = outdir / 'to_validate'
+        Path.mkdir(outdir_2nd, exist_ok=True)
+        outdir_failed = outdir / 'failed'
+        Path.mkdir(outdir_failed, exist_ok=True)
+        prediction_img = prediction.parent / f'{prediction.stem}.png'
+        outfile = outdir / f'{Path(img).stem}_aoi.png'
+        # outfile_draw = outdir_trn / f'{im.stem}_bbox.png'
+        try:
+            inf_data = pandas.read_table(prediction, sep=' ', header=None)
+            scanned_color = cv2.imread(str(img))
+            scanned = cv2.cvtColor(scanned_color, cv2.COLOR_BGR2GRAY)
+            if not scanned.shape[1] == 1024:
+                # warnings.warn(f'Images used for inferences should already be preprocessed and resized to a 1024 height\n'
+                #               f'Got image of shape: {scanned.shape}')
+                ratio = 1024 / scanned.shape[0]
+                scanned_color = cv2.resize(scanned_color, (round(scanned_color.shape[1] * ratio), 1024), interpolation=cv2.INTER_LINEAR)
+                scanned = cv2.resize(scanned, (round(scanned.shape[1]*ratio), 1024), interpolation=cv2.INTER_NEAREST)
 
-        if debug:
-            cv2.imshow("aoi with checked", scanned_color)
-            cv2.waitKey()
-            cv2.destroyAllWindows()
+            # BLACK OUT CHECKED NUMBERS IN IMAGES
+            scanned_draw = scanned.copy()
+            mask_hull = np.zeros((scanned.shape), np.uint8)
+            mask_2unwarp = np.zeros((scanned.shape), np.uint8)
 
-        #cv2.imwrite(str(outfile), scanned_color)
+            conf_threshold = 0.77  # FIXME: softcode
+            pred_areas = []
+            pred_peris = []
+            pred_ratios = []
+            pred_pts = []
+            centers = []
+            for row in inf_data.itertuples():
+                conf = row[-2]
+                if conf > conf_threshold:
+                    x_rel, y_rel, w_rel, h_rel = row[-6:-2]
+                    x = int(x_rel * scanned.shape[1])
+                    y = int(y_rel * scanned.shape[0])
+                    w = int(w_rel * scanned.shape[1])
+                    h = int(h_rel * scanned.shape[0])
+                    ratio = w / h
+                    if 0.8 < ratio < 1.3:
+                        pt1 = int((x_rel-w_rel/2)*scanned.shape[1]), int((y_rel-h_rel/2)*scanned.shape[0])
+                        pt2 = int((x_rel+w_rel/2)*scanned.shape[1]), int((y_rel+h_rel/2)*scanned.shape[0])
+                        pred_pts.append(pt1)
+                        pred_pts.append(pt2)
+                        center = (x, y)
+                        centers.append(center)
+                        cv2.rectangle(mask_hull, pt1, pt2, 255, -1)
+                        cv2.circle(scanned_draw, center, 1, 122, thickness=4)
+                        cv2.circle(mask_2unwarp, center, 1, 255, thickness=4)
+                        area = w*h
+                        peri = 2*w+2*h
+                        pred_areas.append(area)
+                        pred_peris.append(peri)
+                        pred_ratios.append(ratio)
+
+            if debug:
+                cv2.imshow("Checked", scanned_draw)
+                cv2.waitKey()
+                cv2.destroyAllWindows()
+
+            # find grid
+            mean_area = np.mean(pred_areas)
+            min_area = min(pred_areas)
+            max_area = max(pred_areas)
+            min_peri = min(pred_peris)
+            max_peri = max(pred_peris)
+            concat, hull, grid_contours, areas, peris = scanner.find_aoi(scanned,
+                                                                         min_area=min_area*0.65,
+                                                                         max_area=max_area*1.15,
+                                                                         min_peri=min_peri*0.75,
+                                                                         max_peri=max_peri*1.15,
+                                                                         debug=debug)  # bbox: x, y, w, h
+
+            # DRAWING HULL ON AOI
+            # draw white on aoi (concatenate prediction points with grid contour)
+            pred_pts_arr = np.array(pred_pts)
+            concat = np.concatenate([concat[:, 0, :], pred_pts_arr])
+            hull = cv2.convexHull(concat)
+            mask_hull = cv2.drawContours(mask_hull, [hull], -1, 255, -1)
+            # where mask is black, paint original image in black
+            scanned_draw[mask_hull == 0] = 0
+
+            if debug:
+                cv2.imshow("AOI_mask", mask_hull)
+                cv2.waitKey()
+
+            # DRAWING BB ON AOI
+            mask_bb = np.zeros((scanned.shape), np.uint8)
+            x, y, w, h = cv2.boundingRect(concat)
+            # DRAWING WHITE RECTANGLE ON AOI
+            aoi_bb = cv2.rectangle(mask_bb, (x, y), (x + w, y + h), 255, -1)
+            # where mask is black, paint original image in black
+            #scanned_draw[mask_bb == 0] = 0
+
+            component1 = mask_hull.astype(bool)
+            component2 = mask_bb.astype(bool)
+
+            overlap = component1 * component2  # Logical AND
+            union = component1 + component2  # Logical OR
+
+            # Treats "True" as 1, sums number of Trues in overlap and union and divides
+            IOU = overlap.sum() / float(union.sum())
+
+            peri = cv2.arcLength(hull, True)
+            approx = cv2.approxPolyDP(hull, 0.005 * peri, True)
+            mask_hull = cv2.drawContours(mask_hull, [approx], -1, 122, 6)
+
+            if debug:
+                cv2.imshow("Checked", scanned_draw)
+                cv2.waitKey()
+                cv2.imshow("AOI_mask", mask_hull)
+                cv2.waitKey()
+                cv2.imshow(f"AOI_mask BB {IOU:.2f}", aoi_bb)
+                cv2.waitKey()
+                cv2.destroyAllWindows()
+
+            if IOU > 0.975:
+                # loop through predicted bbs
+                numbers = []
+                for x_cent, y_cent in centers:
+                    magic_number, *_ = magic_num_from_pt(x_cent, y_cent, x, y, w, h)
+                    mask_pt = cv2.circle(scanned_draw, (x_cent, y_cent), 1, 0, thickness=12)
+                    if not 0 < magic_number <= 450:
+                        cv2.imshow(f"{magic_number}", scanned_draw)
+                        cv2.waitKey()
+                        cv2.destroyAllWindows()
+                    numbers.append(round(magic_number))
+                    if debug:
+                        cv2.imshow(f"{magic_number}", scanned_draw)
+                        cv2.waitKey()
+                        cv2.destroyAllWindows()
+                results.append(f'{img_district};good;{Path(img).name};{sorted(numbers)}\n')
+                success += 1
+                shutil.copy(prediction_img, outdir / prediction_img.name)
+                cv2.imwrite(str(outdir / f'{prediction_img.stem}_grid.png'), mask_pt)
+            # if the contour has four vertices, then we have found rectangular contours
+            elif len(approx) == 4:
+                if debug:
+                    cv2.imshow(f"{len(hull)} {len(approx)}", mask_hull)
+                    cv2.waitKey()
+                    cv2.destroyAllWindows()
+                # get approx corners ((x,y) tuples)
+                points = approx[:, 0, :]  # np.array(approx)
+                points = transform.order_points(points)
+                #points = np.array([[p] for p in points], dtype="int32")
+                # unwarp to rectangle
+                unwarped = transform.four_point_transform(mask_2unwarp, points)
+                unwarped_scanned = transform.four_point_transform(scanned_draw, points)
+                # use previous technique to read numbers and voilà!
+                if debug:
+                    cv2.imshow(f"before", scanned_draw)
+                    cv2.waitKey()
+                    cv2.imshow(f"after", unwarped)
+                    cv2.waitKey()
+                warped_ctns, _ = cv2.findContours(unwarped, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                numbers = []
+                if len(warped_ctns) != len(centers):
+                    raise ValueError
+                unwarped_scanned_vis = unwarped_scanned.copy()
+                for c in warped_ctns:
+                    M = cv2.moments(c)
+                    cX = int(M["m10"] / M["m00"])
+                    cY = int(M["m01"] / M["m00"])
+                    magic_number, col_lims, row_lims, *_ = magic_num_from_pt(cX, cY, 0, 0, unwarped.shape[1], unwarped.shape[0])
+                    for col_lim in col_lims:
+                        cv2.line(unwarped_scanned_vis, (int(col_lim), 0), (int(col_lim), unwarped_scanned_vis.shape[0]), 122, thickness=3)
+                    for row_lim in row_lims:
+                        cv2.line(unwarped_scanned_vis, (0, int(row_lim)), (unwarped_scanned_vis.shape[1], int(row_lim)), 122, thickness=3)
+                    mask_pt = cv2.circle(unwarped_scanned_vis, (cX, cY), 1, 0, thickness=8)
+                    numbers.append(magic_number)
+                if debug:
+                    cv2.imshow(f"{sorted(numbers)}", mask_pt)
+                    cv2.waitKey()
+                    cv2.destroyAllWindows()
+                results.append(f'{img_district};moderate;{Path(img).name};{sorted(numbers)}\n')
+                validate += 1
+                shutil.copy(prediction_img, outdir_2nd / prediction_img.name)
+                cv2.imwrite(str(outdir_2nd / f'{prediction_img.stem}_grid.png'), mask_pt)
+            else:
+                failed += 1
+                #shutil.copy(prediction_img, outdir_failed / prediction_img.name)
+        except (TypeError, ValueError) as e:
+            failed += 1
+            print(e)
+            shutil.copy(prediction_img, outdir_failed / prediction_img.name)
+
+        outdir_res = Path(f'/home/remi/Documents/sherbrooke_citoyen/27oct_from_inf')
+        with open(outdir_res / 'results.csv', 'w') as fh:
+            fh.writelines(results)
+
+    print(f"Failed: {failed}\nTo validate: {validate}\nSuccess: {success}")
