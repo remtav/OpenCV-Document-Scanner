@@ -535,9 +535,9 @@ if __name__ == "__main__":
             #im_files.extend(Path(im_dir).glob(f"*12-06*{ext}"))
             im_files.extend(Path(im_dir).glob(f"**/*{ext}"))
         #im_files = [f for f in os.listdir(im_dir) if get_ext(f) in valid_formats]
-        include_pdf = False
+        include_pdf = True  # FIXME: this should be added to input args
         if include_pdf:
-            pdfs = Path(im_dir).glob(f"**/*.pdf")
+            pdfs = list(Path(im_dir).glob(f"**/*.pdf"))
             for pdf in tqdm(pdfs):
                 outdir = pdf.parent / "pdf2jpg"
                 outdir.mkdir(exist_ok=True)
