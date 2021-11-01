@@ -224,13 +224,18 @@ class DocScanner(object):
         if '*' in p:
             files = sorted(glob.glob(p, recursive=True))  # glob
         elif os.path.isdir(p):
-            files = sorted(glob.glob(os.path.join(p, '*.*')))  # dir
+            files = sorted(Path(p).glob('**/*.*'))  # dir
         elif os.path.isfile(p):
             files = [p]  # files
         else:
             raise Exception('ERROR: %s does not exist' % p)
 
-        images = [x for x in files if Path(x).suffix.lower() == '.png']
+        images = []
+        for x in files:
+            if x.is_file() and x.suffix == '.png' and "_bvo_annotated" in str(x.parent):
+                images.append(str(x))
+            else:
+                pass  # for debugging
         return images
 
 
@@ -296,9 +301,14 @@ if __name__ == "__main__":
     for img, prediction in tqdm(inf_pairs):
         # WRITING ONLY AOI AS IMAGE
         img_district = [dir for dir in img.split('/') if 'District' in dir][0]
-        outdir = Path(f'/home/remi/Documents/sherbrooke_citoyen/27oct_from_inf/{img_district}')
-        Path.mkdir(outdir, exist_ok=True)
-        outdir_2nd = outdir / 'to_validate'
+        vote_section = eval(prediction.stem.split('_')[-1])
+        outdir = pred_dir.parent / f'{pred_dir.stem}_numbers' / img_district
+        #outdir = Path(f'/home/remi/Documents/sherbrooke_citoyen/27oct_from_inf/{img_district}')
+        print(f'Output files written to {outdir}')
+        Path.mkdir(outdir, exist_ok=True, parents=True)
+        outdir_1st = outdir / 'good'
+        Path.mkdir(outdir_1st, exist_ok=True)
+        outdir_2nd = outdir / 'moderate'
         Path.mkdir(outdir_2nd, exist_ok=True)
         outdir_failed = outdir / 'failed'
         Path.mkdir(outdir_failed, exist_ok=True)
@@ -428,10 +438,10 @@ if __name__ == "__main__":
                         cv2.imshow(f"{magic_number}", scanned_draw)
                         cv2.waitKey()
                         cv2.destroyAllWindows()
-                results.append(f'{img_district};good;{Path(img).name};{sorted(numbers)}\n')
+                results.append(f'{img_district};{vote_section};good;{Path(img).name};{sorted(numbers)}\n')
                 success += 1
-                shutil.copy(prediction_img, outdir / prediction_img.name)
-                cv2.imwrite(str(outdir / f'{prediction_img.stem}_grid.png'), mask_pt)
+                shutil.copy(prediction_img, outdir_1st / prediction_img.name)
+                cv2.imwrite(str(outdir_1st / f'{prediction_img.stem}_grid.png'), mask_pt)
             # if the contour has four vertices, then we have found rectangular contours
             elif len(approx) == 4:
                 if debug:
@@ -471,20 +481,19 @@ if __name__ == "__main__":
                     cv2.imshow(f"{sorted(numbers)}", mask_pt)
                     cv2.waitKey()
                     cv2.destroyAllWindows()
-                results.append(f'{img_district};moderate;{Path(img).name};{sorted(numbers)}\n')
+                results.append(f'{img_district};{vote_section};moderate;{Path(img).name};{sorted(numbers)}\n')
                 validate += 1
                 shutil.copy(prediction_img, outdir_2nd / prediction_img.name)
                 cv2.imwrite(str(outdir_2nd / f'{prediction_img.stem}_grid.png'), mask_pt)
             else:
                 failed += 1
-                #shutil.copy(prediction_img, outdir_failed / prediction_img.name)
+                shutil.copy(prediction_img, outdir_failed / prediction_img.name)
         except (TypeError, ValueError) as e:
             failed += 1
             print(e)
             shutil.copy(prediction_img, outdir_failed / prediction_img.name)
 
-        outdir_res = Path(f'/home/remi/Documents/sherbrooke_citoyen/27oct_from_inf')
-        with open(outdir_res / 'results.csv', 'w') as fh:
+        with open(outdir.parent / 'results.csv', 'w') as fh:
             fh.writelines(results)
 
     print(f"Failed: {failed}\nTo validate: {validate}\nSuccess: {success}")
