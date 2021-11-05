@@ -487,9 +487,11 @@ if __name__ == "__main__":
                 cv2.imwrite(str(outdir_2nd / f'{prediction_img.stem}_grid.png'), mask_pt)
             else:
                 failed += 1
+                results.append(f'{img_district};{vote_section};failed;{Path(img).name}\n')
                 shutil.copy(prediction_img, outdir_failed / prediction_img.name)
         except (TypeError, ValueError) as e:
             failed += 1
+            results.append(f'{img_district};{vote_section};failed;{Path(img).name}\n')
             print(e)
             shutil.copy(prediction_img, outdir_failed / prediction_img.name)
 
