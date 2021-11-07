@@ -126,7 +126,7 @@ class DocScanner(object):
         """
 
         # these constants are carefully chosen
-        MORPH = 5
+        MORPH = 1
         CANNY = 84
         HOUGH = 25
 
@@ -301,7 +301,12 @@ if __name__ == "__main__":
     for img, prediction in tqdm(inf_pairs):
         # WRITING ONLY AOI AS IMAGE
         img_district = [dir for dir in img.split('/') if 'District' in dir][0]
-        vote_section = eval(prediction.stem.split('_')[-1])
+        if debug:
+            vote_section = 'debug'
+        else:
+            #print(f'VOTE SECTION HARDCODED FOR DEBUGGING, LINE 307')
+            #vote_section = 'debug'
+            vote_section = eval(prediction.stem.split('_')[-1])
         outdir = pred_dir.parent / f'{pred_dir.stem}_numbers' / img_district
         #outdir = Path(f'/home/remi/Documents/sherbrooke_citoyen/27oct_from_inf/{img_district}')
         print(f'Output files written to {outdir}')
@@ -331,7 +336,7 @@ if __name__ == "__main__":
             mask_hull = np.zeros((scanned.shape), np.uint8)
             mask_2unwarp = np.zeros((scanned.shape), np.uint8)
 
-            conf_threshold = 0.77  # FIXME: softcode
+            conf_threshold = 0.55  # FIXME: softcode
             pred_areas = []
             pred_peris = []
             pred_ratios = []

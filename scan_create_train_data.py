@@ -634,7 +634,7 @@ if __name__ == "__main__":
 
                 out_non_ckd_draw = out_non_ckd.copy()
                 # WRITING ONLY AOI AS IMAGE
-                outdir_trn = Path(f'/home/remi/Documents/sherbrooke_citoyen/training_img_15oct/{im.parent.parent.parent.name}')
+                outdir_trn = Path(f'/home/remi/Documents/sherbrooke_citoyen/training_img_7nov/{im.parent.parent.parent.name}')
                 Path.mkdir(outdir_trn, exist_ok=True)
                 outfile = outdir_trn / f'{im.stem}_trn.png'
                 outfile_draw = outdir_trn / f'{im.stem}_bbox.png'
